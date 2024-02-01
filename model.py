@@ -53,7 +53,7 @@ class Car(Base):
     price_usd: Mapped[int]
     username: Mapped[Optional[str]]
     odometer: Mapped[int]
-    phone_number: Mapped[str]
+    phone_number: Mapped[Optional[str]]
     image_url: Mapped[str]
     images_count: Mapped[int]
     car_number: Mapped[Optional[str]]
@@ -77,7 +77,7 @@ class CarSchema(Schema):
     price_usd = fields.Int(required=True)
     username = fields.Str(allow_none=True)
     odometer = fields.Int(required=True)
-    phone_number = fields.Str(required=True)
+    phone_number = fields.Str(required=True, allow_none=True)
     image_url = fields.Str(required=True)
     images_count = fields.Int(required=True)
     car_number = fields.Str(allow_none=True)

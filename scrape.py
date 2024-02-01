@@ -7,7 +7,7 @@ from selenium import webdriver
 from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException, WebDriverException
+from selenium.common.exceptions import NoSuchElementException, WebDriverException, TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -59,6 +59,7 @@ def try_open_url(driver: webdriver.Firefox, url: str):
             time.sleep(1)
 
     else:
+        driver.quit()
         raise RuntimeError(f"Scraping terminated: the site  {url}  is unavailable for {PING_TIME} seconds " \
                            f"see the following traceback:\n{trb_str}")
 
@@ -93,7 +94,7 @@ def prepare(url):
 
     driver = webdriver.Firefox(service=SERVICE, options=options)
 
-    driver.set_page_load_timeout(10)  # завантажуємо сторінку щонайбільше 10 секунд
+    driver.set_page_load_timeout(30)  # завантажуємо сторінку щонайбільше 10 секунд
 
     open_url(driver, url)
 
@@ -210,38 +211,53 @@ def process_car(driver: webdriver.Firefox, car_url) -> dict:
         cn = None  # може бути відсутній
     data['car_number'] = cn.text.strip() if cn is not None else None
 
+    mode = 'bad'  # коли розмітка інша під час повільного завантаження сайту;
+                  # це потрібно для визначення номера телефону, див. нижче
     try:
         try:  # перевірений і звичайний vin-code відрізняються
             cv = driver.find_element(By.CSS_SELECTOR, "span.label-vin")
         except NoSuchElementException:
-            cv = driver.find_element(By.CSS_SELECTOR, "span.vin-code") 
+            cv = driver.find_element(By.CSS_SELECTOR, "span.vin-code")
+        mode = 'good'
     except NoSuchElementException:
         try:
             cv = driver.find_element(By.ID, "badgesVin") \
                        .find_element(By.TAG_NAME, "span")
         except NoSuchElementException:
             cv = None  # може бути відсутній
+        mode = 'bad'
     data['car_vin'] = cv.text if cv is not None else None
 
-    try: 
-        show_phone_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CLASS_NAME, "phone_show_link")))
-        show_phone_button.click()
+    # Виявляється, іноді натискаєш "показати", але у вікні, що з'являється нема номера телефону.
+    # А іноді взагалі нема навіть номера та кнопки "показати" - і тоді NoSuchElementException, що
+    # означає іншу розмітку. Але це не так, і щоб розрізнти ці ситуації, треба запам'ятати, із якою
+    # саме версією сайту ми працюємо ('good' - звичайна версія, 'bad' - погана), і якщо номера взагалі
+    # нема, а версія сайту "хороша" - отже, номер = None
+    try:
+        try: 
+            show_phone_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CLASS_NAME, "phone_show_link")))
+            show_phone_button.click()
 
-        # Беремо тільки перший номер телефону, їх може бути декілька
-        ph = WebDriverWait(driver, 10).until(
-            EC.visibility_of_element_located((By.CLASS_NAME, "popup-successful-call-desk"))
-        )
+            # Беремо тільки перший номер телефону, їх може бути декілька
+            ph = WebDriverWait(driver, 10).until(
+                EC.visibility_of_element_located((By.CLASS_NAME, "popup-successful-call-desk"))
+            )
 
-    except NoSuchElementException:
-        show_phone_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CLASS_NAME, "sl.conversion")))
-        show_phone_button.click()
+        except NoSuchElementException:
+            if mode == 'good':
+                ph = None
+            else:
+                show_phone_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CLASS_NAME, "sl.conversion")))
+                show_phone_button.click()
 
-        phone_popup = WebDriverWait(driver, 10).until(
-            EC.visibility_of_element_located((By.CLASS_NAME, "popup-inner"))
-        )
+                phone_popup = WebDriverWait(driver, 10).until(
+                    EC.visibility_of_element_located((By.CLASS_NAME, "popup-inner"))
+                )
 
-        ph = phone_popup.find_element(By.TAG_NAME, "span")
-    data["phone_number"] = _get_phone_number(ph.text)
+                ph = phone_popup.find_element(By.TAG_NAME, "span")
+    except TimeoutException:  # натискаємо "показати", але номера нема
+        ph = None
+    data["phone_number"] = _get_phone_number(ph.text) if ph is not None else None
 
     return data
 
@@ -280,6 +296,8 @@ def scrape(pages: int = None):
                 data = []  # зібрані дані усіх машин із поточної сторінки
 
                 if i >= 1:  
+                    if not open_url(driver, URL.format(i)):
+                        break
                     if not open_url(driver, URL.format(i)):
                         break
 
