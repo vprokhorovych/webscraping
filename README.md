@@ -10,9 +10,10 @@
 1. Створити теку (наприклад, `D:\Projects\ws`) та перейти в неї у File Explorer
 2. Запустити Git Bash із цієї теки та ввести команду `git clone <http path>`, де `<http path>` - https-посилання на репозиторій із кодом
 3. Заповнити `D:\Projects\ws\webscraping\.env` власними значеннями
-4. Відкрити звичайний термінал та перейти у `ws` (приміром, за допомогою команди `pushd D:\Projects\ws`) 
-5. Виконати команди `python -m venv .venv` (створити віртуальне середовище) та `.venv\Scripts\activate` (активувати його)
-6. Встановити необхідні бібліотеки командою `pip install -r webscraping\requirements.txt`
-7. Виконати в терміналі команду `python webscraping`
+4. За допомогою `psql` створити БД (відповідно до пераметрів, заданих в `.env`)
+5. Відкрити звичайний термінал та перейти у `ws` (приміром, за допомогою команди `pushd D:\Projects\ws`) 
+6. Виконати команди `python -m venv .venv` (створити віртуальне середовище) та `.venv\Scripts\activate` (активувати його)
+7. Встановити необхідні бібліотеки командою `pip install -r webscraping\requirements.txt`
+8. Виконати в терміналі команду `python webscraping`
 
    
