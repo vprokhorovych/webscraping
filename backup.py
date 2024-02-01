@@ -4,9 +4,11 @@ from datetime import date
 
 
 db_passwd = os.getenv("DB_PASSWD", 'postgres')
+pg_dump_path =  os.getenv("PG_DUMP_PATH")
+
 def backup(db_url: str, backup_dir_path: str):
-    command = r'"C:\Program Files\PostgreSQL\15\bin\pg_dump.exe" --format=c --dbname=postgresql://{} > "{}".dmp' \
-              .format(db_url, os.path.join(backup_dir_path, str(date.today())))
+    command = '"{}" --format=c --dbname=postgresql://{} > "{}".dmp' \
+              .format(pg_dump_path, db_url, os.path.join(backup_dir_path, str(date.today())))
     try:
         proc = subprocess.Popen(command, shell=True, env={
             'PGPASSWORD': db_passwd,

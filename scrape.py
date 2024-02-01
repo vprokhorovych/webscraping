@@ -1,3 +1,8 @@
+import re
+import time
+from datetime import date
+import traceback
+
 from selenium import webdriver
 from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.firefox.options import Options
@@ -5,18 +10,11 @@ from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException, WebDriverException
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-import re
-
-import time
-from datetime import date
-import datetime
-import traceback
 
 from sqlalchemy.dialects.postgresql import insert, Insert
 from sqlalchemy import delete
 
-from model import Session, Car, CarSchema, FIELDS_TO_UPDATE
+from .model import Session, Car, CarSchema, FIELDS_TO_UPDATE
 
 # нижче - допоміжні функції для витягування ціни з тексту тощо
 def _get_price(text: str) -> int:
@@ -40,8 +38,9 @@ def build_upsert_dict(fields: list[str], stmt: Insert) -> dict:
 
 
 SERVICE = Service(r'D:\WebDrivers\geckodriver.exe')
-# URL = 'https://auto.ria.com/uk/car/used/{}'
-URL = 'https://auto.ria.com/uk/search/?indexName=auto&country.import.usa.not=-1&price.currency=1&abroad.not=0&custom.not=1&page={}&size=100'
+# URL = 'https://auto.ria.com/uk/search/?indexName=auto&country.import.usa.not=-1&price.currency=1&abroad.not=0&custom.not=1&page={}&size=100'
+URL = 'https://auto.ria.com/uk/search/?indexName=auto&country.import.usa.not=-1&price.currency=1&abroad.not=0&custom.not=1&page={}&size=10'
+MAIN_PAGE_URL = 'https://auto.ria.com/uk'
 options = Options()
 options.add_argument('--headless')
 
@@ -80,13 +79,6 @@ def page_404(driver: webdriver.Firefox) -> bool:
     # except NoSuchElementException:
     #     return False
 
-def empty_page(driver: webdriver.Firefox) -> bool:
-    """Повертає `True`, якщо сторінка не містить машин, інакше `False`.
-    Сторінка вже має бути відкрита.
-    """
-
-    return not bool(driver.find_elements(By.CLASS_NAME, "m-link-ticket"))
-
 
 def open_url(driver: webdriver.Firefox, url: str) -> bool:
     """Відкриває сторінку і вертає `True`, якщо вона не 404, інакше вертає `False`"""
@@ -101,9 +93,7 @@ def prepare(url):
 
     driver = webdriver.Firefox(service=SERVICE, options=options)
 
-    # driver.capabilities['timeouts']['pageLoad'] = 8000  # вебдрайвер чекатиме завантаження сторінки 
-    #                                                     # щонайбільше 8 секунд
-    driver.set_page_load_timeout(30)
+    driver.set_page_load_timeout(10)  # завантажуємо сторінку щонайбільше 10 секунд
 
     open_url(driver, url)
 
@@ -115,9 +105,16 @@ def prepare(url):
     return driver
 
 
+# У цілому, можна було б просто шукати в картці машини у фіді елемент "Продано", і замість двох
+# функцій нижче обмежитися однією. Але теоретично може бути ситуація, що якусь машину випадково
+# позначили проданою, і поки я дійду до її url-a, цю мітку видалять. Саме для такого випадку потрібна
+# функція `car_deleted`. Якщо ж машина продана давно, але ще є у фіді, то її url збігатиметься з адресою
+# головної сторінки `MAIN_PAGE_URL` (таке буває), і тому отримати її актуальний стан - неможливо (хоча, найімовірніше,
+# якщо машину давно продали, то це не є помилка), тому потрібна функція `redirect_to_main_page`
+
 def car_deleted(driver: webdriver.Firefox) -> bool:
     """Іноді машина є у фіді, але вона вже продана. У цьому разі майже всі потрібні нам поля відсутні,
-    але є відповідне попередження."""
+    але на сторінці є відповідне попередження."""
 
     try:
         driver.find_element(By.ID, "autoDeletedTopBlock")
@@ -125,6 +122,13 @@ def car_deleted(driver: webdriver.Firefox) -> bool:
         return False
     
     return True
+
+
+def redirect_to_main_page(url):
+    """Іноді машина є у фіді, але вона вже продана досить давно (наприклад, годин 5 тому), і її `url`
+    тоді збігається із `MAIN_PAGE_URL`. У такому разі ми не повинні скрейпити цей `url`."""
+
+    return url == MAIN_PAGE_URL
 
 
 def process_car(driver: webdriver.Firefox, car_url) -> dict:
@@ -165,7 +169,6 @@ def process_car(driver: webdriver.Firefox, car_url) -> dict:
     except NoSuchElementException:  # у машин може бути відсутній пробіг, але у вживаних таке, мабуть, не трапляється
         od = None
     data['odometer'] = _get_first_num(od.text) if od is not None else 0
-
 
     try:
         u = driver.find_element(By.CLASS_NAME, "seller_info_name")
@@ -243,45 +246,51 @@ def process_car(driver: webdriver.Firefox, car_url) -> dict:
     return data
 
 
-def scrape():
+def scrape(pages: int = None):
     """Бігаємо по сторінках, визначаємо urls всіх вживаних машин, зображених на даній сторінці,
     запам'ятовуємо їх, потім заходимо по кожному url-у, і беремо звідти необхідну інфу. Після цього
     робимо bulk upsert отриманих даних (оновлюючи `update_date` - це дуже важливо), і йдемо до
     наступної сторінки. Як все проскрейпили, видаляємо з БД ті записи, у яких `update_date` менша 
     за поточну дату (це машини, яких уже нема у фіді).
     
-    Крім того, доводиться замінювати драйвер - після кількох сот відкритих сторінок браузер просто
-    припиняє відкривати нові сторінки (схожу поведінку я спостерігав і звичайному браузері) заразом
-    споживаючи кілька гігабайтів оперативки. Можна було б чистити кеш, але простіше свторити новий драйвер"""
+    Крім того, доводиться замінювати драйвер - після кількох сот відкритих сторінок (а іноді просто після кількох -
+    на щастя, це дуже рідко трапляється) браузер просто припиняє відкривати нові сторінки (схожу поведінку
+    я спостерігав і звичайному браузері) заразом споживаючи кілька гігабайтів оперативки. Можна було б чистити
+    кеш, але простіше створити новий драйвер.
+    """
 
     try:
+        print(f'Pages to scrape: {pages if pages else "all"}')
         i = 0
         driver = prepare(URL.format(i))
         data = []
         schema = CarSchema()
         today = date.today()
-        rids_met = set()  # оскільки autoria.com оновлює дані, то може трапитися таке, що ми проглянули машину Х,
-                          # а поки ми дійшли до кінця поточної сторінки, нові машини витіснили Х на наступну сторінку,
-                          # і ми знову будемо працювати з Х
+        # rids_met = set()  # Оскільки autoria.com оновлює дані, то може трапитися таке, що ми проглянули машину Х,
+        #                   # а поки ми дійшли до кінця поточної сторінки, нові машини витіснили Х на наступну сторінку,
+        #                   # і ми знову будемо працювати з Х. З іншого боку, може трапитися таке, що ми обробили Х, 
+        #                   # і поки ми працювали з рештою сторінки, Х змінили, і вона з'явилася далі, і тоді ми втратимо
+        #                   # змогу оновити в БД запис про Х (але ціною довшої роботи програми). Важко сказати, який підхід
+        #                   # кращий чи правильніший. Якщо повторів буде дуже багато, то, звісно, треба кожен запис оброблювати
+        #                   # один раз, інакше час роботи виросте в рази. Але повтори трапляються рідко, тому я оновлюю записи
         total = 0
         start = time.time()
         with Session() as session:
-            while True:
-                data = []
-
-                # if i == 2: break 
+            for i in range(pages or int(1e9)):  # pages == або додатній int, або None
+                data = []  # зібрані дані усіх машин із поточної сторінки
 
                 if i >= 1:  
-                    if not open_url(driver, URL.format(i)) or empty_page(driver):
-                        break  # більше машин нема, ми закінчили
-
-                i += 1
+                    if not open_url(driver, URL.format(i)):
+                        break
 
                 elements = driver.find_elements(By.CLASS_NAME, "m-link-ticket")
+                if not elements:
+                    break  # більше машин нема, ми закінчили
+                
+                # викидаємо беззмістовні адреси
+                urls = [url for e in elements if not redirect_to_main_page(url := e.get_attribute('href'))]
 
-                urls = [e.get_attribute('href') for e in elements]  
-                # print('\n', f'Urls len:  {len(urls)}')
-                # print('\n', f'Set  len:  {len(set(urls))}', '\n')
+                # власне скрейпінг
                 for url in urls:
                     print(url)
 
@@ -293,23 +302,22 @@ def scrape():
                         print('\nDriver refreshing\n')
                         driver = prepare(url)
 
-                    if car_deleted(driver):  # якщо машина вже продана
+                    if car_deleted(driver):  # якщо машина вже продана, але ще у фіді із власною сторінкою
                         continue
 
-                    # if url == 'https://auto.ria.com/uk/auto_mercedes_benz_gl_class_35952891.html':
-                    #     1
                     try:
-                        raw_data = process_car(driver, url)
+                        # car_data = schema.load(process_car(driver, url))
+                        data.append(schema.load(process_car(driver, url)))
                     except NoSuchElementException:  # якщо інша розмітка - пропускаємо цей запис
                         continue
 
-                    data.append(schema.load(raw_data))
 
-                    rid = data[-1]['rid']
-                    if rid in rids_met:
-                        continue
+                    # rid = car_data['rid']
+                    # if rid in rids_met:
+                    #     continue
 
-                    rids_met.add(rid)
+                    # data.append(car_data)
+                    # rids_met.add(rid)
 
                 
                 # bulk upsert
@@ -323,23 +331,12 @@ def scrape():
                 session.commit()
 
                 total += len(urls)
-                print(f'\nProcessed {total} cars in  {time.time() - start} seconds\n')
+                print(f'\nProcessed {total} cars and {i + 1} pages in  {time.time() - start} seconds\n')
 
             session.execute(delete(Car).where(Car.update_date < today))  # видалити машини, яких уже нема на сайті
             session.commit()
 
-            print(f"Scraping finished successfully; total time:  {time.time() - start}")
+            print(f"Scraping finished successfully\n\tTotal time:  {time.time() - start}\n\tCars scraped:  {total}")
 
     finally:
         driver.quit()
-
-import os
-from model import db_url
-from backup import backup
-BACKUP_DIR = 'dumps'
-backup_dir_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), BACKUP_DIR)
-if not os.path.exists(backup_dir_path):
-    os.mkdir(backup_dir_path)
-
-scrape()
-backup(db_url, backup_dir_path)

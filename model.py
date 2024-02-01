@@ -14,7 +14,6 @@ from marshmallow import Schema, fields
 from dotenv import load_dotenv
 
 load_dotenv()
-# user, passwd, host, port, db_name
 
 db_user = os.getenv  ("DB_USER", 'postgres')
 db_passwd = os.getenv("DB_PASSWD", 'postgres')
@@ -23,7 +22,6 @@ db_port = os.getenv  ("DB_PORT", '5432')
 db_name = os.getenv  ("DB_NAME", 'car')
 
 db_url = f'{db_user}:{db_passwd}@{db_host}:{db_port}/{db_name}'
-# engine = create_engine(f'postgresql+psycopg2://postgres:postgres@localhost/car')
 engine = create_engine('postgresql+psycopg2://' + db_url)
 
 Session = sessionmaker(bind=engine)
